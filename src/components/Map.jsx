@@ -6,7 +6,10 @@ import { featureCollection, polygon } from '@turf/helpers';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-function Map({ features, selectedFeature, onMapLoad, searchBbox, onSearchArea, onSelect }) {
+// MAPBOX SATELLITE TOKEN (Provided)
+const MB_TOKEN = 'pk.eyJ1Ijoib3BlbmFlcmlhbG1hcCIsImEiOiJjbWowaThzc2swOTVtM2NxMXA2Y2J3bDdzIn0.gmFG84efi2_zK6Yx5ot_5Q';
+
+function Map({ features, selectedFeature, onMapInit, searchBbox, onSearchArea, onSelect, layerMode, setLayerMode, previewedIds, hiddenIds, basemap }) {
   const mapContainer = useRef(null);
   const map = useRef(null);
   const debounceTimer = useRef(null);
@@ -17,10 +20,7 @@ function Map({ features, selectedFeature, onMapLoad, searchBbox, onSearchArea, o
   const onSelectRef = useRef(onSelect);
   const selectedFeatureRef = useRef(selectedFeature);
   
-  const popupRef = useRef(new maplibregl.Popup({ closeButton: false, closeOnClick: false }));
-
   const [isLoaded, setIsLoaded] = useState(false); 
-  const [layerMode, setLayerMode] = useState('none'); 
   const [gridVersion, setGridVersion] = useState(0); 
   const [zoomMsg, setZoomMsg] = useState('');
 
@@ -144,14 +144,28 @@ function Map({ features, selectedFeature, onMapLoad, searchBbox, onSearchArea, o
       container: mapContainer.current,
       style: {
         version: 8,
-        sources: { 'carto-light': { type: 'raster', tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'], tileSize: 256, attribution: '&copy; OpenStreetMap &copy; CARTO' } },
-        layers: [{ id: 'carto-light', type: 'raster', source: 'carto-light' }]
+        sources: {
+            'basemap-source': {
+                type: 'raster',
+                tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'],
+                tileSize: 256,
+                attribution: '&copy; OpenStreetMap &copy; CARTO'
+            }
+        },
+        layers: [
+            { id: 'basemap-layer', type: 'raster', source: 'basemap-source' }
+        ]
       },
       center: center,
-      zoom: zoom
+      zoom: zoom,
+      attributionControl: false // We will move this or let it default
     });
 
-    map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
+    // Pass map instance back to parent for Toolbar control
+    if (onMapInit) onMapInit(map.current);
+
+    // Add Attribution manually if needed, or keep default bottom-right
+    map.current.addControl(new maplibregl.AttributionControl(), 'bottom-right');
 
     map.current.on('load', () => {
       setIsLoaded(true);
@@ -230,13 +244,15 @@ function Map({ features, selectedFeature, onMapLoad, searchBbox, onSearchArea, o
             }
         }
 
+        // Notify parent of new bounds/center for MiniMap & Search
         if (isProgrammaticMove.current) { isProgrammaticMove.current = false; return; }
         
         debounceTimer.current = setTimeout(() => {
            if (!map.current) return;
            const bounds = map.current.getBounds();
+           const center = map.current.getCenter();
            const bboxArray = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
-           if (onSearchRef.current) onSearchRef.current(bboxArray);
+           if (onSearchRef.current) onSearchRef.current(bboxArray, [center.lng, center.lat], [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()]);
         }, 1500); 
       });
     });
@@ -259,7 +275,26 @@ function Map({ features, selectedFeature, onMapLoad, searchBbox, onSearchArea, o
     try { isProgrammaticMove.current = true; map.current.fitBounds(searchBbox, { padding: 50, maxZoom: 14 }); } catch(e) {}
   }, [searchBbox, isLoaded]);
 
-  // 5. SELECTION
+  // 5. BASEMAP SWITCHER
+  useEffect(() => {
+    if (!map.current || !isLoaded) return;
+    
+    let tiles = [];
+    if (basemap === 'carto') {
+        tiles = ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'];
+    } else if (basemap === 'hot') {
+        tiles = ['https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png'];
+    } else if (basemap === 'satellite') {
+        tiles = [`https://api.mapbox.com/v4/mapbox.satellite/{z}/{x}/{y}@2x.png?access_token=${MB_TOKEN}`];
+    }
+
+    const source = map.current.getSource('basemap-source');
+    if (source) {
+        source.setTiles(tiles);
+    }
+  }, [basemap, isLoaded]);
+
+  // 6. SELECTION
   useEffect(() => {
     if (!map.current || !isLoaded) return;
     const mapInstance = map.current;
@@ -288,80 +323,86 @@ function Map({ features, selectedFeature, onMapLoad, searchBbox, onSearchArea, o
     } catch(e) {}
   }, [selectedFeature, isLoaded]);
 
-  // 6. LAYER MODES
+  // 7. LAYER MODES
   useEffect(() => {
     if (!map.current || !isLoaded) return;
     const mapInstance = map.current;
     
+    const idsToShow = new Set(); 
+    const isGlobalPreviewOn = layerMode === 'previews';
+    const zoom = mapInstance.getZoom();
+
+    if (isGlobalPreviewOn) {
+        if (zoom < 8) {
+            setZoomMsg('Zoom in to see images');
+        } else {
+            setZoomMsg('');
+            features.forEach(f => {
+              if (!hiddenIds.has(f.properties.id)) idsToShow.add(f.properties.id);
+            });
+        }
+    } else {
+        setZoomMsg(''); 
+    }
+
+    previewedIds.forEach(id => idsToShow.add(id));
+
     const style = mapInstance.getStyle();
     if (style && style.layers) {
       style.layers.forEach(layer => {
         if (layer.id.startsWith('preview-')) {
-          mapInstance.removeLayer(layer.id);
-          if (mapInstance.getSource(layer.id)) mapInstance.removeSource(layer.id);
+          const id = layer.id.replace('preview-', '');
+          if (!idsToShow.has(id)) {
+             mapInstance.removeLayer(layer.id);
+             if (mapInstance.getSource(layer.id)) mapInstance.removeSource(layer.id);
+          }
         }
       });
     }
 
-    if (mapInstance.getLayer('oam-mosaic-layer')) {
-      const visibility = layerMode === 'mosaic' ? 'visible' : 'none';
-      mapInstance.setLayoutProperty('oam-mosaic-layer', 'visibility', visibility);
-    }
+    idsToShow.forEach(id => {
+       const layerId = `preview-${id}`;
+       if (mapInstance.getLayer(layerId)) return; 
 
-    if (layerMode === 'previews') {
-        const renderPreviews = () => {
-            const zoom = mapInstance.getZoom();
-            if (zoom < 8) { setZoomMsg('Zoom in to see images'); return; }
-            setZoomMsg('');
-            features.forEach(feature => {
-              const thumbnail = feature.properties.thumbnail;
-              const layerId = `preview-${feature.properties.id}`;
-              if (mapInstance.getLayer(layerId)) return;
-              const isSmall = !feature.properties.is_large;
-              const isVisible = (isSmall && zoom >= 10) || (!isSmall && zoom >= 8);
-              if (thumbnail && isVisible) {
-                try {
-                  const bounds = bbox(feature);
-                  const coords = [[bounds[0], bounds[3]], [bounds[2], bounds[3]], [bounds[2], bounds[1]], [bounds[0], bounds[1]]];
-                  const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(thumbnail)}`;
-                  mapInstance.addSource(layerId, { type: 'image', url: proxyUrl, coordinates: coords });
-                  mapInstance.addLayer({ id: layerId, type: 'raster', source: layerId, paint: { 'raster-opacity': 0.9, 'raster-fade-duration': 0 } }, 'oam-highlight'); 
-                } catch(e) {}
-              }
-            });
-          };
-          renderPreviews();
-          mapInstance.on('moveend', renderPreviews);
-          return () => { mapInstance.off('moveend', renderPreviews); };
-    } else {
-      setZoomMsg('');
-    }
+       const feature = features.find(f => f.properties.id === id);
+       if (feature && feature.properties.thumbnail) {
+           try {
+              const bounds = bbox(feature);
+              const coords = [[bounds[0], bounds[3]], [bounds[2], bounds[3]], [bounds[2], bounds[1]], [bounds[0], bounds[1]]];
+              const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(feature.properties.thumbnail)}`;
+              mapInstance.addSource(layerId, { type: 'image', url: proxyUrl, coordinates: coords });
+              mapInstance.addLayer({ id: layerId, type: 'raster', source: layerId, paint: { 'raster-opacity': 0.9, 'raster-fade-duration': 0 } }, 'oam-highlight'); 
+           } catch(e) { console.error("Error adding layer", id, e); }
+       }
+    });
 
     if (mapInstance.getLayer('oam-large-fill')) {
-      const isNone = layerMode === 'none';
-      const footprintFillOpacity = isNone ? 0.1 : 0;
+      const footprintFillOpacity = 0.1;
       mapInstance.setPaintProperty('oam-large-fill', 'fill-opacity', footprintFillOpacity);
       mapInstance.setPaintProperty('oam-small-fill', 'fill-opacity', footprintFillOpacity);
+      
       if (mapInstance.getLayer('grid-fill')) {
-          const gridVisible = isNone ? 'visible' : 'none';
-          mapInstance.setLayoutProperty('grid-fill', 'visibility', gridVisible);
-          mapInstance.setLayoutProperty('grid-count', 'visibility', gridVisible);
+          mapInstance.setLayoutProperty('grid-fill', 'visibility', 'visible');
+          mapInstance.setLayoutProperty('grid-count', 'visibility', 'visible');
       }
     }
-  }, [layerMode, features, isLoaded]);
+  }, [layerMode, features, isLoaded, previewedIds, hiddenIds]); 
 
   return (
     <div className="relative w-full h-full">
       <div ref={mapContainer} className="w-full h-full" />
       
-      {/* MOVED: Layer Mode Toggle to BOTTOM-LEFT */}
+      {/* Layer Mode Toggle */}
       <div className="absolute bottom-8 left-4 z-10 bg-white rounded-md shadow-md border border-gray-200 flex flex-col overflow-hidden">
         <button onClick={() => setLayerMode('none')} className={`px-4 py-2 text-xs font-semibold text-left hover:bg-gray-50 border-b border-gray-100 ${layerMode === 'none' ? 'bg-gray-100 text-cyan-700' : 'text-gray-600'}`}>Footprints Only</button>
-        <button onClick={() => setLayerMode('mosaic')} className={`px-4 py-2 text-xs font-semibold text-left hover:bg-gray-50 border-b border-gray-100 ${layerMode === 'mosaic' ? 'bg-cyan-50 text-cyan-700' : 'text-gray-600'}`}>Global Mosaic</button>
         <button onClick={() => setLayerMode('previews')} className={`px-4 py-2 text-xs font-semibold text-left hover:bg-gray-50 ${layerMode === 'previews' ? 'bg-cyan-50 text-cyan-700' : 'text-gray-600'}`}>Live Previews</button>
       </div>
 
-      {layerMode === 'previews' && zoomMsg && <div className="absolute top-4 left-36 z-10 bg-black/70 text-white text-xs px-3 py-1.5 rounded animate-fade-in">{zoomMsg}</div>}
+      {layerMode === 'previews' && zoomMsg && (
+        <div className="absolute bottom-8 left-36 z-30 bg-black/80 text-white text-xs px-4 py-2 rounded-full shadow-lg animate-fade-in pointer-events-none whitespace-nowrap">
+          {zoomMsg}
+        </div>
+      )}
     </div>
   );
 }

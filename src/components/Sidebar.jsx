@@ -3,24 +3,19 @@ import ImageCard from './ImageCard';
 
 const ITEMS_PER_PAGE = 50;
 
-function Sidebar({ features, onSelect, selectedFeature, isLoading, limit }) {
+function Sidebar({ features, onSelect, selectedFeature, isLoading, limit, layerMode, previewedIds, hiddenIds, onTogglePreview }) {
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
   const listRef = useRef(null);
 
-  // 1. Reset visible count when filters change (new features list)
   useEffect(() => {
     setVisibleCount(ITEMS_PER_PAGE);
-    // Scroll to top when list refreshes
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [features]);
 
-  // 2. Auto-expand list if selected item is hidden
   useEffect(() => {
     if (selectedFeature) {
       const index = features.findIndex(f => f.properties.id === selectedFeature.properties.id);
       if (index >= visibleCount) {
-        // If the selected item is deeper than what's shown, expand just enough to show it
-        // We add a small buffer (e.g. +5) so it's not at the very bottom
         setVisibleCount(index + 5);
       }
     }
@@ -30,7 +25,6 @@ function Sidebar({ features, onSelect, selectedFeature, isLoading, limit }) {
     setVisibleCount(prev => Math.min(prev + ITEMS_PER_PAGE, features.length));
   };
 
-  // 3. Header Text Helper
   const getHeaderText = () => {
     if (isLoading) return 'Loading...';
     if (features.length === 0) return 'No images found in view';
@@ -40,20 +34,33 @@ function Sidebar({ features, onSelect, selectedFeature, isLoading, limit }) {
 
   const visibleFeatures = features.slice(0, visibleCount);
 
+  const isFeatureVisible = (id) => {
+    if (layerMode === 'previews') {
+      return !hiddenIds.has(id);
+    } else {
+      return previewedIds.has(id);
+    }
+  };
+
   return (
-    <div ref={listRef} className="flex-1 overflow-y-auto bg-gray-50 relative scroll-smooth">
-       {/* Header */}
-      <div className="p-4 border-b border-gray-200 bg-white sticky top-0 z-20 shadow-sm">
-        <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-          <span className={`w-3 h-3 rounded-full ${isLoading ? 'bg-gray-300 animate-pulse' : 'bg-cyan-500'}`}></span>
-          OAM Browser
-        </h2>
-        <p className="text-sm text-gray-500 mt-1">
-          {getHeaderText()}
+    <div ref={listRef} className="flex-1 overflow-y-auto bg-gray-50 relative scroll-smooth font-sans">
+      <div className="p-5 border-b border-gray-200 bg-white sticky top-0 z-20 shadow-sm">
+        
+        {/* LOGO HEADER */}
+        <div className="flex items-center gap-3 mb-2">
+            <img 
+              src="https://map.openaerialmap.org/static/media/oam-logo-h-pos.a507b97d.svg" 
+              alt="OpenAerialMap" 
+              className="h-8"
+            />
+        </div>
+
+        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+           <span className={`w-2 h-2 rounded-full ${isLoading ? 'bg-gray-300 animate-pulse' : 'bg-cyan-500'}`}></span>
+           {getHeaderText()}
         </p>
       </div>
 
-      {/* List */}
       <div className="p-4 space-y-4">
         {isLoading && features.length === 0 ? (
           <div className="flex justify-center py-8">
@@ -67,10 +74,11 @@ function Sidebar({ features, onSelect, selectedFeature, isLoading, limit }) {
                 feature={feature} 
                 onSelect={onSelect}
                 isSelected={selectedFeature && selectedFeature.properties.id === feature.properties.id}
+                isPreviewOn={isFeatureVisible(feature.properties.id)}
+                onTogglePreview={() => onTogglePreview(feature.properties.id)}
               />
             ))}
             
-            {/* Load More Button */}
             {visibleCount < features.length && (
               <button 
                 onClick={handleLoadMore}
@@ -85,7 +93,6 @@ function Sidebar({ features, onSelect, selectedFeature, isLoading, limit }) {
         )}
       </div>
 
-       {/* Loading Overlay (Initial Load) */}
        {isLoading && features.length > 0 && (
           <div className="absolute inset-0 bg-white/50 z-30 pointer-events-none flex items-start justify-center pt-20">
               <div className="bg-white p-2 rounded-full shadow-md">

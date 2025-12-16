@@ -2,8 +2,10 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Map from './components/Map';
-import SearchBar from './components/SearchBar';
-import MapFilterBar from './components/MapFilterBar'; // NEW
+import MapFilterBar from './components/MapFilterBar'; 
+import Toolbar from './components/Toolbar';
+import MiniMap from './components/MiniMap';
+import BurgerMenu from './components/BurgerMenu';
 import area from '@turf/area';
 
 const RESULT_LIMIT = 500;
@@ -13,34 +15,43 @@ function App() {
   const [features, setFeatures] = useState([]);
   const [selectedFeature, setSelectedFeature] = useState(null);
   const [mapBbox, setMapBbox] = useState(null);
+  
+  // Track Map State for Controls/MiniMap
+  const [mapInstance, setMapInstance] = useState(null);
+  const [mapCenter, setMapCenter] = useState([0, 20]);
+  const [mapBounds, setMapBounds] = useState(null);
+
   const [loading, setLoading] = useState(false);
   const initialUrlSelectionDone = useRef(false);
 
-  // Default to "Any" date (empty strings)
+  // --- STATE ---
+  const [layerMode, setLayerMode] = useState('none');
+  const [previewedIds, setPreviewedIds] = useState(new Set());
+  const [hiddenIds, setHiddenIds] = useState(new Set());
+  const [basemap, setBasemap] = useState('carto');
+
   const [filters, setFilters] = useState({
-    dateStart: '', 
-    dateEnd: '',
-    platform: '',
-    license: ''
+    dateStart: '', dateEnd: '', platform: '', license: ''
   });
 
-  // (All helper functions fetchOamData, updateUrlSelection, etc. remain EXACTLY the same)
-  // ... [Keep existing helper functions here] ...
-  
   const updateUrlSelection = (feature) => {
     const params = new URLSearchParams(window.location.search);
-    if (feature) {
-      params.set('selected_id', feature.properties.id);
-    } else {
-      params.delete('selected_id');
-    }
-    const newUrl = `${window.location.pathname}?${params.toString()}`;
-    window.history.replaceState({}, '', newUrl);
+    if (feature) params.set('selected_id', feature.properties.id);
+    else params.delete('selected_id');
+    window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
   };
 
   const handleSelectFeature = (feature) => {
     setSelectedFeature(feature);
     updateUrlSelection(feature);
+  };
+
+  const handleTogglePreview = (id) => {
+    if (layerMode === 'previews') {
+      setHiddenIds(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+    } else {
+      setPreviewedIds(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+    }
   };
 
   const formatFileSize = (bytes) => {
@@ -53,6 +64,8 @@ function App() {
 
   const fetchOamData = async (bbox = null, currentFilters = filters) => {
     setLoading(true);
+    // Note: We don't reset previewedIds here to allow persistence during panning
+    
     try {
       const API_BASE = import.meta.env.DEV ? '/api' : 'https://corsproxy.io/?https://api.openaerialmap.org';
       let url = `${API_BASE}/meta?limit=${RESULT_LIMIT}&order_by=acquisition_end&sort=desc`;
@@ -72,10 +85,7 @@ function App() {
       if (data.results) {
         let processedFeatures = data.results.map(image => {
           const rawPlatform = image.platform || image.properties?.platform || 'unknown';
-          const cleanPlatform = rawPlatform.toLowerCase();
           const featureAreaSqM = image.geojson ? area(image.geojson) : 0;
-          const isLarge = featureAreaSqM / 1000000 >= LARGE_IMAGE_THRESHOLD_SQ_KM;
-
           return {
             type: 'Feature',
             geometry: image.geojson,
@@ -86,8 +96,8 @@ function App() {
               provider: image.provider,
               thumbnail: image.properties?.thumbnail || null,
               date: image.acquisition_end || 'Unknown Date',
-              is_large: isLarge, 
-              platform: cleanPlatform,
+              is_large: featureAreaSqM / 1000000 >= LARGE_IMAGE_THRESHOLD_SQ_KM, 
+              platform: rawPlatform.toLowerCase(),
               sensor: image.sensor || image.properties?.sensor || 'Unknown Sensor',
               gsd: image.gsd ? `${(image.gsd).toFixed(2)} m` : 'N/A',
               file_size: formatFileSize(image.file_size),
@@ -97,6 +107,7 @@ function App() {
           };
         });
 
+        // Client-side Filtering
         if (currentFilters.platform) {
           processedFeatures = processedFeatures.filter(f => {
             const p = f.properties.platform;
@@ -106,7 +117,6 @@ function App() {
             return true;
           });
         }
-        
         if (currentFilters.license) {
            const target = currentFilters.license.replace(/[\s-]/g, '').toLowerCase(); 
            processedFeatures = processedFeatures.filter(f => {
@@ -114,7 +124,6 @@ function App() {
              return actual.includes(target);
            });
         }
-
         setFeatures(processedFeatures);
       } else {
         setFeatures([]);
@@ -123,9 +132,7 @@ function App() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchOamData();
-  }, []);
+  useEffect(() => { fetchOamData(); }, []);
 
   useEffect(() => {
     if (features.length > 0 && !initialUrlSelectionDone.current) {
@@ -133,9 +140,7 @@ function App() {
         const urlSelectedId = params.get('selected_id');
         if (urlSelectedId) {
             const feature = features.find(f => f.properties.id === urlSelectedId);
-            if (feature) {
-                setSelectedFeature(feature);
-            }
+            if (feature) setSelectedFeature(feature);
         }
         initialUrlSelectionDone.current = true;
     }
@@ -151,35 +156,73 @@ function App() {
     fetchOamData(bbox);
   };
 
-  const handleMapMoveEnd = (bbox) => {
+  // --- MAP SYNC HANDLER ---
+  const handleMapMoveEnd = (bbox, center, exactBounds) => {
     setMapBbox(bbox); 
-    fetchOamData(bbox);
+    setMapCenter(center);
+    setMapBounds(exactBounds); 
+    
+    // RESTORED: Trigger fetch when map moves to update Sidebar count & list
+    fetchOamData(bbox); 
   };
 
   return (
-    <div className="flex w-full h-screen overflow-hidden bg-gray-100">
+    <div className="flex w-full h-screen overflow-hidden bg-gray-100 font-sans">
+      
+      {/* 1. SIDEBAR (Left) */}
       <div className="flex flex-col w-96 h-full bg-white border-r border-gray-200 shadow-xl z-20 relative">
-        <SearchBar onLocationSelect={handleLocationSelect} />
-        {/* Removed FilterPanel from Sidebar */}
         <Sidebar 
           features={features} 
           onSelect={handleSelectFeature}
           selectedFeature={selectedFeature} 
           isLoading={loading}
           limit={RESULT_LIMIT}
+          layerMode={layerMode}
+          previewedIds={previewedIds}
+          hiddenIds={hiddenIds}
+          onTogglePreview={handleTogglePreview}
         />
       </div>
 
+      {/* 2. MAIN MAP AREA */}
       <div className="flex-1 h-full relative">
-        {/* Added MapFilterBar over the map */}
-        <MapFilterBar filters={filters} onChange={handleFilterChange} />
         
+        {/* TOP LEFT: Filters (Restored position) */}
+        <div className="absolute top-4 left-4 z-30 w-full max-w-2xl">
+            <MapFilterBar filters={filters} onChange={handleFilterChange} />
+        </div>
+
+        {/* TOP RIGHT: Burger Menu */}
+        <BurgerMenu />
+
+        {/* BOTTOM RIGHT: MiniMap (Aligned with Burger Menu) */}
+        <div className="absolute bottom-8 right-4 z-30">
+           <MiniMap center={mapCenter} bounds={mapBounds} />
+        </div>
+
+        {/* BOTTOM LEFT: Toolbar (Stacked above Footprints Switcher) */}
+        {/* Adjusted bottom value to sit nicely above the layer toggle */}
+        <Toolbar 
+            className="absolute bottom-36 left-4 z-30"
+            mapInstance={mapInstance} 
+            onLocationSelect={handleLocationSelect}
+            basemap={basemap}
+            setBasemap={setBasemap}
+        />
+
+        {/* THE MAP */}
         <Map 
+          onMapInit={setMapInstance} 
           features={features} 
           selectedFeature={selectedFeature}
           onSelect={handleSelectFeature}
           searchBbox={mapBbox} 
-          onSearchArea={handleMapMoveEnd} 
+          onSearchArea={handleMapMoveEnd}
+          layerMode={layerMode}
+          setLayerMode={setLayerMode}
+          previewedIds={previewedIds}
+          hiddenIds={hiddenIds}
+          basemap={basemap}
         />
       </div>
     </div>
