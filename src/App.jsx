@@ -8,7 +8,7 @@ import MiniMap from './components/MiniMap';
 import BurgerMenu from './components/BurgerMenu';
 import area from '@turf/area';
 
-const RESULT_LIMIT = 500;
+const RESULT_LIMIT = 50;
 const LARGE_IMAGE_THRESHOLD_SQ_KM = 25; 
 
 function App() {
