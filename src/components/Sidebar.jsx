@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ImageCard from './ImageCard';
 
-const ITEMS_PER_PAGE = 50;
+const ITEMS_PER_PAGE = 10;
 
 function Sidebar({ features, onSelect, selectedFeature, isLoading, limit, layerMode, previewedIds, hiddenIds, onTogglePreview }) {
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
